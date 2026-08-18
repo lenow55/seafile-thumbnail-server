@@ -1,0 +1,123 @@
+name: Build & Push thumbnail-server
+
+on:
+  workflow_dispatch:
+    inputs:
+      registry:
+        description: "Target registry (hostname)"
+        type: choice
+        default: "docker.io"
+        options:
+          - docker.io
+          - docker.seafile.top
+      namespace:
+        description: "Registry namespace / user (docker.io: lenow; docker.seafile.top: seafileltd)"
+        type: string
+        default: "lenow"
+      image:
+        description: "Image name"
+        type: string
+        default: "thumbnail-server"
+      version:
+        description: "Version tag (e.g. 13.0.20)"
+        type: string
+        default: "13.0.20"
+      seafobj_ref:
+        description: "seafobj tag/branch to checkout (haiwen/seafobj)"
+        type: string
+        default: "v13.0.25-server"
+      platforms:
+        description: "Target platforms (comma-separated)"
+        type: string
+        default: "linux/amd64,linux/arm64"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buildx-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ${{ github.event.inputs.registry }}
+  NAMESPACE: ${{ github.event.inputs.namespace }}
+  IMAGE: ${{ github.event.inputs.image }}
+  VERSION: ${{ github.event.inputs.version }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        env:
+          # значение передаётся через env, а не через ${{ }} внутри скрипта:
+          # env-значения никогда не интерпретируются шеллом (защита от injection)
+          SEAFOBJ_REF: ${{ github.event.inputs.seafobj_ref }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?([a-zA-Z0-9_-]*)$ ]]; then
+            echo "::error::Invalid version format: $VERSION"
+            exit 1
+          fi
+          if ! [[ "$SEAFOBJ_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Invalid seafobj_ref format: $SEAFOBJ_REF"
+            exit 1
+          fi
+
+      - name: Checkout seafobj
+        uses: actions/checkout@v4
+        with:
+          repository: haiwen/seafobj
+          ref: ${{ github.event.inputs.seafobj_ref }}
+          path: docker/seafobj
+
+      - name: Prepare build context
+        run: |
+          set -euo pipefail
+          # по docker/readme.md: собрать thumbnail-server внутри контекста docker/
+          mkdir -p docker/thumbnail-server
+          cp -r seafile_thumbnail docker/thumbnail-server/
+          cp app.py main.py requirements.txt docker/thumbnail-server/
+
+      - name: Login to Docker Hub
+        if: github.event.inputs.registry == 'docker.io'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to private registry
+        if: github.event.inputs.registry == 'docker.seafile.top'
+        uses: docker/login-action@v3
+        with:
+          registry: docker.seafile.top
+          username: ${{ vars.SEAFILE_REGISTRY_USERNAME }}
+          password: ${{ secrets.SEAFILE_REGISTRY_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute major.minor
+        id: mm
+        run: |
+          first=$(echo "${VERSION}" | cut -d '.' -f1)
+          second=$(echo "${VERSION}" | cut -d '.' -f2)
+          echo "major_minor=${first}.${second}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: docker
+          file: docker/Dockerfile
+          platforms: ${{ github.event.inputs.platforms }}
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ env.IMAGE }}:${{ steps.mm.outputs.major_minor }}-latest
