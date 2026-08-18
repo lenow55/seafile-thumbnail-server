@@ -34,9 +34,14 @@ COPY seafobj/requirements.txt /opt/seafile/thumbnail-server/seafobj-requirements
 COPY seafobj/seafobj /opt/seafile/seafile/lib/python3/site-packages/seafobj
 COPY seafobj/objwrapper /opt/seafile/seafile/lib/python3/site-packages/objwrapper
 
-RUN pip3 install --no-cache-dir -r /opt/seafile/thumbnail-server/requirements.txt && \
-    pip3 install --no-cache-dir -r /opt/seafile/thumbnail-server/seafobj-requirements.txt && \ 
-    pip3 install --no-cache-dir chardet pymysql sqlalchemy redis pylibmc oss2 lxml
+# --ignore-installed: ubuntu:24.04 ships some deps as Debian packages
+# (python3-jwt, python3-requests, ...). Without this flag pip tries to
+# uninstall them and fails with "RECORD file not found. installed by debian".
+# pip versions land in /usr/local/lib/python3/dist-packages and shadow the
+# system ones via sys.path.
+RUN pip3 install --no-cache-dir --ignore-installed -r /opt/seafile/thumbnail-server/requirements.txt && \
+    pip3 install --no-cache-dir --ignore-installed -r /opt/seafile/thumbnail-server/seafobj-requirements.txt && \
+    pip3 install --no-cache-dir --ignore-installed chardet pymysql sqlalchemy redis pylibmc oss2 lxml
 
 # scripts
 COPY scripts /scripts
